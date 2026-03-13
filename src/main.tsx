@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, createContext, useContext, onMount, onCleanup, createResource } from './framework/hooks';
+import { useState, useEffect, useMemo, useRef, useCallback, useReducer, useId, useLayoutEffect, createContext, useContext, onMount, onCleanup, createResource } from './framework/hooks';
 import { For, Show, Switch, Match, Suspense } from './framework/components';
 import { Router, Route, Link } from './framework/router';
 
@@ -78,6 +78,85 @@ function AsyncProfile() {
       <h4>User Profile (Async)</h4>
       <p>Name: <strong>{user.data?.name}</strong></p>
       <p>Role: <strong>{user.data?.role}</strong></p>
+    </div>
+  );
+}
+
+// ---- Demo: useReducer ----
+type CounterAction = { type: 'increment' } | { type: 'decrement' } | { type: 'reset' };
+
+function counterReducer(state: number, action: CounterAction): number {
+  switch (action.type) {
+    case 'increment': return state + 1;
+    case 'decrement': return state - 1;
+    case 'reset': return 0;
+    default: return state;
+  }
+}
+
+function NewHooksDemo() {
+  // useReducer: action/dispatch 复杂状态
+  const [reducerCount, dispatch] = useReducer(counterReducer, 0);
+
+  // useId: 唯一 ID
+  const inputId = useId();
+  const checkboxId = useId();
+
+  // useCallback: 缓存回调
+  const handleAlert = useCallback(() => {
+    alert('useCallback works! Reducer count = ' + reducerCount);
+  });
+
+  // useLayoutEffect: 同步测量 DOM
+  const [measured, setMeasured] = useState('Measuring...');
+  useLayoutEffect(() => {
+    const el = document.getElementById(inputId);
+    if (el) {
+      setMeasured(`Input width = ${el.offsetWidth}px`);
+    }
+  });
+
+  return (
+    <div style={{ marginTop: '20px', padding: '15px', border: '1px solid #ddd', borderRadius: '8px' }}>
+      <h2>新 Hooks 演示 (Phase 13)</h2>
+
+      <div style={{ marginBottom: '15px', padding: '10px', backgroundColor: '#f3e5f5', borderRadius: '6px' }}>
+        <h4 style={{ color: '#7b1fa2', margin: '0 0 8px' }}>useReducer — Action/Dispatch</h4>
+        <p>Count: <strong style={{ fontSize: '18px' }}>{reducerCount}</strong></p>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button onClick={() => dispatch({ type: 'decrement' })}>➖ Decrement</button>
+          <button onClick={() => dispatch({ type: 'reset' })}>🔄 Reset</button>
+          <button onClick={() => dispatch({ type: 'increment' })}>➕ Increment</button>
+        </div>
+      </div>
+
+      <div style={{ marginBottom: '15px', padding: '10px', backgroundColor: '#e8f5e9', borderRadius: '6px' }}>
+        <h4 style={{ color: '#2e7d32', margin: '0 0 8px' }}>useId — 唯一标识符绑定</h4>
+        <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+          <label htmlFor={inputId}>Name:</label>
+          <input id={inputId} placeholder="Auto-linked via useId" style={{ padding: '4px 8px', flex: 1 }} />
+        </div>
+        <div style={{ marginTop: '8px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <input type="checkbox" id={checkboxId} />
+          <label htmlFor={checkboxId}>I agree (checkbox ID: {checkboxId})</label>
+        </div>
+      </div>
+
+      <div style={{ marginBottom: '15px', padding: '10px', backgroundColor: '#fff3e0', borderRadius: '6px' }}>
+        <h4 style={{ color: '#e65100', margin: '0 0 8px' }}>useCallback — 回调缓存</h4>
+        <button onClick={handleAlert}>Click me (useCallback)</button>
+        <p style={{ fontSize: '12px', color: '#666', marginTop: '6px' }}>
+          在 0-VDOM 架构下，useCallback 直接透传函数，因为不存在 vdom diff 导致的引用比较问题。
+        </p>
+      </div>
+
+      <div style={{ padding: '10px', backgroundColor: '#e3f2fd', borderRadius: '6px' }}>
+        <h4 style={{ color: '#1565c0', margin: '0 0 8px' }}>useLayoutEffect — 同步布局测量</h4>
+        <p>{measured}</p>
+        <p style={{ fontSize: '12px', color: '#666' }}>
+          useLayoutEffect 在 DOM 变更后、浏览器绘制前通过 queueMicrotask 同步执行。
+        </p>
+      </div>
     </div>
   );
 }
@@ -168,6 +247,7 @@ function HomePage() {
       </div>
       
       <ThemeButton />
+      <NewHooksDemo />
     </div>
   );
 }

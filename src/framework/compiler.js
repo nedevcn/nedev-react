@@ -9,26 +9,31 @@ export default function solidReactCompiler() {
         path.traverse({
           VariableDeclarator(varPath) {
             // Looking for: const [count, setCount] = useState(init)
+            // or: const [state, dispatch] = useReducer(reducer, init)
             if (
               t.isArrayPattern(varPath.node.id) &&
               varPath.node.init &&
-              t.isCallExpression(varPath.node.init) &&
-              t.isIdentifier(varPath.node.init.callee, { name: 'useState' })
+              t.isCallExpression(varPath.node.init)
             ) {
-              const stateNameNode = varPath.node.id.elements[0];
-              const setterNameNode = varPath.node.id.elements[1];
+              const callee = varPath.node.init.callee;
+              const isUseState = t.isIdentifier(callee, { name: 'useState' });
+              const isUseReducer = t.isIdentifier(callee, { name: 'useReducer' });
+              
+              if (!isUseState && !isUseReducer) return;
 
-              if (t.isIdentifier(stateNameNode) && t.isIdentifier(setterNameNode)) {
+              const stateNameNode = varPath.node.id.elements[0];
+              const secondNameNode = varPath.node.id.elements[1];
+
+              if (t.isIdentifier(stateNameNode) && t.isIdentifier(secondNameNode)) {
                 const stateName = stateNameNode.name;
-                const setterName = setterNameNode.name;
+                const secondName = secondNameNode.name;
                 
                 // Track this component's scope
                 const scope = varPath.scope;
                 
-                // We're converting const [count, setCount] = useState(0)
-                // into: 
-                // const _raw_count = useState(0); 
-                // (where useState returns a signal object { get, set })
+                // Converting:
+                //   const [count, setCount] = useState(0)      → _raw_count = useState(0); setCount = _raw_count.set
+                //   const [state, dispatch] = useReducer(r, s)  → _raw_state = useReducer(r, s); dispatch = _raw_state.dispatch
                 
                 const rawName = `_raw_${stateName}`;
                 
@@ -40,22 +45,21 @@ export default function solidReactCompiler() {
                   )
                 );
                 
-                // Insert setter assignment: const setCount = _raw_count.set;
+                // Insert second binding: .set for useState, .dispatch for useReducer
+                const memberName = isUseReducer ? 'dispatch' : 'set';
                 varPath.parentPath.insertAfter(
                   t.variableDeclaration('const', [
                     t.variableDeclarator(
-                      t.identifier(setterName),
-                      t.memberExpression(t.identifier(rawName), t.identifier('set'))
+                      t.identifier(secondName),
+                      t.memberExpression(t.identifier(rawName), t.identifier(memberName))
                     )
                   ])
                 );
                 
-                // Now replace ALL read references to `count` in the scope with `_raw_count.get()`
-                // We must do this safely.
+                // Replace ALL read references to state name with _raw_state.get()
                 scope.path.traverse({
                   Identifier(idPath) {
                     if (idPath.node.name === stateName && idPath.isReferencedIdentifier()) {
-                      // Avoid replacing the declaration itself, though we already replaced it
                       idPath.replaceWith(
                         t.callExpression(
                           t.memberExpression(t.identifier(rawName), t.identifier('get')),

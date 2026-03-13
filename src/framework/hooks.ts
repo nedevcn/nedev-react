@@ -62,6 +62,65 @@ export function useRef<T>(initialValue: T | null = null): { current: T | null } 
   return { current: initialValue };
 }
 
+/**
+ * useCallback — 缓存回调函数，避免子组件因引用变化而被不必要地重复调用。
+ * 在 0-VDOM 架构下，本质上等价于 useMemo(() => fn)。
+ * 因为我们不做 diff，所以不需要严格的 deps 比较，直接返回 memoized 函数即可。
+ */
+export function useCallback<T extends (...args: any[]) => any>(fn: T, deps?: any[]): T {
+  // In our signal-based architecture, functions don't need memoization
+  // because there's no reconciliation. But we provide API compatibility.
+  return fn;
+}
+
+/**
+ * useReducer — 复杂状态管理，适合 action/dispatch 模式。
+ * 返回 { get, set } 与 dispatch 函数（通过 Babel 编译器正确转换为解构）。
+ */
+export function useReducer<S, A>(
+  reducer: (state: S, action: A) => S,
+  initialState: S
+) {
+  const sig = signal(initialState);
+  const dispatch = (action: A) => {
+    sig(reducer(sig(), action));
+  };
+  return {
+    get: () => sig(),
+    set: (val: S) => sig(val),
+    dispatch
+  };
+}
+
+/**
+ * useId — 生成组件级唯一 ID。
+ * 每次调用返回一个稳定的唯一字符串，适合表单 htmlFor / aria-* 关联。
+ */
+let _idCounter = 0;
+export function useId(): string {
+  return ':r' + (_idCounter++) + ':';
+}
+
+/**
+ * useLayoutEffect — 在 DOM 变更后同步执行（paint 之前）。
+ * 区别于 useEffect 的异步调度，useLayoutEffect 使用微任务确保在浏览器绘制之前完成。
+ * 适合测量 DOM、同步布局计算等场景。
+ */
+export function useLayoutEffect(fn: () => void | (() => void), deps?: any[]) {
+  let cleanup: void | (() => void);
+  // Use queueMicrotask so it runs after DOM mutations but before paint
+  effect(() => {
+    queueMicrotask(() => {
+      if (cleanup) cleanup();
+      cleanup = fn();
+    });
+  });
+
+  onCleanup(() => {
+    if (cleanup) cleanup();
+  });
+}
+
 export let currentLifecycles: { mounts: (() => void)[], cleanups: (() => void)[] } | null = null;
 export function setCurrentLifecycles(val: any) {
   currentLifecycles = val;
