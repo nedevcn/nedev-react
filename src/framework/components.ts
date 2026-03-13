@@ -1,4 +1,5 @@
-import { effect } from 'alien-signals';
+import { effect, signal } from 'alien-signals';
+import { SuspenseContext } from './hooks';
 
 type KeyRef = string | number;
 
@@ -33,8 +34,14 @@ export function For<T>(props: ForProps<T>) {
   
   let currentRecords: Map<KeyRef, ItemRecord> = new Map();
   let currentArray: T[] = [];
+  const trigger = signal(0);
+
+  // DocumentFragment is transparent to MutationObserver, so onMount won't work.
+  // Use microtask to schedule after synchronous DOM assembly completes.
+  Promise.resolve().then(() => trigger(1));
 
   effect(() => {
+    trigger(); // Dependency to force run on mount
     // each 可能是一个由 Babel Babel 插件包起来的闭包 `() => data.get()`
     // 在 props 当中它可能直接传进来的是一个 function
     let listOrFn = props.each;
@@ -163,5 +170,284 @@ export function For<T>(props: ForProps<T>) {
   // 返回 Fragment 供 JSX runtime 挂载。里面的所有节点（包括初始列表和 anchor）
   // 都会被转移到最终的父节点（比如 ul）中。
   // 之后的更新中，anchor.parentNode 就会是确切的那个实际父级。
+  return initialFrag;
+}
+
+/**
+ * <Show> 组件：条件渲染，提供最高效的 DOM O(1) 按需插拔
+ */
+export interface ShowProps<T> {
+  when: T | undefined | null | false;
+  fallback?: any;
+  children: any;
+}
+
+export function Show<T>(props: ShowProps<T>) {
+  const anchor = document.createComment('Show-Anchor');
+  const initialFrag = document.createDocumentFragment();
+  initialFrag.appendChild(anchor);
+
+  let currentNodes: Node[] = [];
+  let isCurrentlyTruthy = false;
+  let hasRendered = false;
+  const trigger = signal(0);
+
+  Promise.resolve().then(() => trigger(1));
+
+  effect(() => {
+    trigger(); // Dependency to force run on mount
+    let cond = props.when;
+    if (cond && typeof cond === 'object') {
+      if ('__lazy' in cond) cond = (cond as any).__lazy();
+      if ('__g' in cond) cond = (cond as any).__g();
+    }
+    const isTruthy = !!cond;
+    
+    // 如果条件真假没变，且已经渲染过了，就不需要做任何重复的 DOM 操作
+    if (hasRendered && isTruthy === isCurrentlyTruthy) return;
+
+    const parent = anchor.parentNode;
+    if (!parent) return; // Not mounted yet
+
+    // 卸载当前的所有节
+    currentNodes.forEach(node => {
+      if (node.parentNode === parent) parent.removeChild(node);
+    });
+    currentNodes = [];
+
+    isCurrentlyTruthy = isTruthy;
+    hasRendered = true;
+
+    // 获取并解包内容
+    let content = isTruthy ? props.children : props.fallback;
+    
+    if (content && typeof content === 'object') {
+      if ('__lazy' in content) content = content.__lazy();
+      if ('__g' in content) content = content.__g();
+    }
+    if (typeof content === 'function') {
+      content = content(); 
+    }
+
+    // 挂载新的 DOM
+    if (content != null) {
+      let rootNodes: Node[] = [];
+      if (content instanceof Node) {
+         rootNodes = [content];
+      } else if (Array.isArray(content)) {
+         content.forEach(r => {
+            if (r instanceof Node) rootNodes.push(r);
+            else if (r != null) rootNodes.push(document.createTextNode(String(r)));
+         });
+      } else {
+         rootNodes = [document.createTextNode(String(content))];
+      }
+
+      rootNodes.forEach(n => {
+         parent.insertBefore(n, anchor);
+         currentNodes.push(n);
+      });
+    }
+  });
+
+  return initialFrag;
+}
+
+/**
+ * <Match> 标志位组件，配合 <Switch> 使用
+ */
+export interface MatchProps<T> {
+  when: T | undefined | null | false;
+  children: any;
+}
+
+export function Match<T>(props: MatchProps<T>) {
+  // 我们只返回 props 对象本身，作为标记供 Switch 读取
+  return { __isMatch: true, ...props } as any; 
+}
+
+/**
+ * <Switch> 互斥分支流组件
+ */
+export interface SwitchProps {
+  fallback?: any;
+  children: any;
+}
+
+export function Switch(props: SwitchProps) {
+  const anchor = document.createComment('Switch-Anchor');
+  const initialFrag = document.createDocumentFragment();
+  initialFrag.appendChild(anchor);
+
+  let currentNodes: Node[] = [];
+  let currentMatchIndex = -1;
+  const trigger = signal(0);
+
+  Promise.resolve().then(() => trigger(1));
+
+  effect(() => {
+    trigger(); // Dependency to force run on mount
+    let children = props.children;
+    if (children && typeof children === 'object') {
+      if ('__lazy' in children) children = children.__lazy();
+      if ('__g' in children) children = children.__g();
+    }
+    
+    let matchArr = Array.isArray(children) ? children : [children];
+    
+    let targetIndex = -1;
+    let targetContent: any = null;
+
+    for (let i = 0; i < matchArr.length; i++) {
+       let m = matchArr[i];
+       if (m && typeof m === 'object') {
+         if ('__lazy' in m) m = m.__lazy();
+         if ('__g' in m) m = m.__g();
+       }
+       
+       if (m && m.__isMatch) {
+          let cond = m.when;
+          if (cond && typeof cond === 'object') {
+             if ('__lazy' in cond) cond = cond.__lazy();
+             if ('__g' in cond) cond = cond.__g();
+          }
+          if (cond) {
+             targetIndex = i;
+             targetContent = m.children;
+             break;
+          }
+       }
+    }
+
+    if (targetIndex === -1 && props.fallback !== undefined) {
+       targetIndex = -2; // 代表 fallback 分支
+       targetContent = props.fallback;
+    }
+
+    if (targetIndex === currentMatchIndex) return;
+
+    const parent = anchor.parentNode;
+    if (!parent) return;
+
+    currentNodes.forEach(node => {
+      if (node.parentNode === parent) parent.removeChild(node);
+    });
+    currentNodes = [];
+    currentMatchIndex = targetIndex;
+
+    if (targetContent != null) {
+       if (targetContent && typeof targetContent === 'object') {
+           if ('__lazy' in targetContent) targetContent = targetContent.__lazy();
+           if ('__g' in targetContent) targetContent = targetContent.__g();
+       }
+       if (typeof targetContent === 'function') targetContent = targetContent();
+
+       let rootNodes: Node[] = [];
+       if (targetContent instanceof Node) rootNodes = [targetContent];
+       else if (Array.isArray(targetContent)) {
+           targetContent.forEach(r => {
+               if (r instanceof Node) rootNodes.push(r);
+               else if (r != null) rootNodes.push(document.createTextNode(String(r)));
+           });
+       } else rootNodes = [document.createTextNode(String(targetContent))];
+
+       rootNodes.forEach(n => {
+           parent.insertBefore(n, anchor);
+           currentNodes.push(n);
+       });
+    }
+  });
+
+  return initialFrag;
+}
+
+
+/**
+ * <Suspense> 异步悬挂组件
+ */
+export interface SuspenseProps {
+  fallback: any;
+  children: any;
+}
+
+export function Suspense(props: SuspenseProps) {
+  const pendingCount = signal(0);
+  // Internal helper to get/set signal directly for simpler logic in this component
+  const getPending = () => pendingCount();
+  const setPending = (v: number) => pendingCount(v);
+
+  const contextValue = {
+    register: () => setPending(getPending() + 1),
+    resolve: () => setPending(Math.max(0, getPending() - 1))
+  };
+
+  const anchor = document.createComment('Suspense-Anchor');
+  const initialFrag = document.createDocumentFragment();
+  initialFrag.appendChild(anchor);
+
+  let fallbackNodes: Node[] = [];
+  let childrenNodes: Node[] = [];
+  let isShowingFallback = false;
+  let hasEvaluatedChildren = false;
+  const trigger = signal(0);
+
+  Promise.resolve().then(() => trigger(1));
+
+  effect(() => {
+    trigger(); // Dependency to force run on mount
+    // 强制依赖 pendingCount
+    const pending = getPending();
+    const showFallback = pending > 0;
+
+    const parent = anchor.parentNode;
+    if (!parent) return;
+
+    if (showFallback && !isShowingFallback) {
+       // Hide children (but keep in memory for persistence)
+       childrenNodes.forEach(n => { if (n.parentNode === parent) parent.removeChild(n); });
+       
+       // Show fallback
+       let fb = props.fallback;
+       if (fb && typeof fb === 'object' && '__lazy' in fb) fb = fb.__lazy();
+       if (typeof fb === 'function') fb = fb();
+       
+       const nodes: Node[] = [];
+       if (fb instanceof Node) nodes.push(fb);
+       else if (Array.isArray(fb)) fb.forEach(n => { if (n instanceof Node) nodes.push(n); else nodes.push(document.createTextNode(String(n))); });
+       else nodes.push(document.createTextNode(String(fb)));
+
+       nodes.forEach(n => parent.insertBefore(n, anchor));
+       fallbackNodes = nodes;
+       isShowingFallback = true;
+    } else if (!showFallback && (isShowingFallback || !hasEvaluatedChildren)) {
+       // Hide fallback
+       fallbackNodes.forEach(n => { if (n.parentNode === parent) parent.removeChild(n); });
+       fallbackNodes = [];
+
+       if (!hasEvaluatedChildren) {
+         // Show children (evaluate ONCE)
+         const stack = (SuspenseContext as any)._stack;
+         stack.push(() => contextValue);
+         
+         let content = props.children;
+         if (content && typeof content === 'object' && '__lazy' in content) content = content.__lazy();
+         if (typeof content === 'function') content = content();
+         
+         stack.pop();
+
+         const nodes: Node[] = [];
+         if (content instanceof Node) nodes.push(content);
+         else if (Array.isArray(content)) content.forEach(n => { if (n instanceof Node) nodes.push(n); else nodes.push(document.createTextNode(String(n))); });
+         else nodes.push(document.createTextNode(String(content)));
+         childrenNodes = nodes;
+         hasEvaluatedChildren = true;
+       }
+
+       // Show children
+       childrenNodes.forEach(n => parent.insertBefore(n, anchor));
+       isShowingFallback = false;
+    }
+  });
+
   return initialFrag;
 }

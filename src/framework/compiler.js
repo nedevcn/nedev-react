@@ -113,20 +113,62 @@ export default function solidReactCompiler() {
           },
 
           // Transform JSX elements that are direct children of another element/fragment into lazy getters
-          JSXElement(path) {
-            const parent = path.parent;
-            // Only transform if it's a child of another JSX element or fragment
-            if (t.isJSXElement(parent) || t.isJSXFragment(parent)) {
-              const newContainer = t.jsxExpressionContainer(
-                t.objectExpression([
-                  t.objectProperty(
-                    t.identifier('__g'),
-                    t.arrowFunctionExpression([], path.node)
-                  )
-                ])
-              );
-              path.replaceWith(newContainer);
-              path.skip(); // Prevent infinite wrapping
+          JSXElement: {
+            exit(path) {
+              const parent = path.parent;
+              // Prevent Double Wrapping if already wrapped in our __lazy or __g obj
+              if (t.isObjectProperty(parent)) return;
+
+              if (t.isJSXElement(parent) || t.isJSXFragment(parent)) {
+                 const newContainer = t.jsxExpressionContainer(
+                   t.objectExpression([
+                     t.objectProperty(
+                       t.identifier('__lazy'),
+                       t.arrowFunctionExpression([], path.node)
+                     )
+                   ])
+                 );
+                 path.replaceWith(newContainer);
+                 path.skip();
+              } else if (t.isJSXExpressionContainer(parent)) {
+                 // For cases like `fallback={<Comp />}` or `<div>{<Comp/>}</div>`
+                 const obj = t.objectExpression([
+                     t.objectProperty(
+                       t.identifier('__lazy'),
+                       t.arrowFunctionExpression([], path.node)
+                     )
+                 ]);
+                 path.replaceWith(obj);
+                 path.skip();
+              }
+            }
+          },
+          JSXFragment: {
+            exit(path) {
+              const parent = path.parent;
+              if (t.isObjectProperty(parent)) return;
+
+              if (t.isJSXElement(parent) || t.isJSXFragment(parent)) {
+                 const newContainer = t.jsxExpressionContainer(
+                   t.objectExpression([
+                     t.objectProperty(
+                       t.identifier('__lazy'),
+                       t.arrowFunctionExpression([], path.node)
+                     )
+                   ])
+                 );
+                 path.replaceWith(newContainer);
+                 path.skip();
+              } else if (t.isJSXExpressionContainer(parent)) {
+                 const obj = t.objectExpression([
+                     t.objectProperty(
+                       t.identifier('__lazy'),
+                       t.arrowFunctionExpression([], path.node)
+                     )
+                 ]);
+                 path.replaceWith(obj);
+                 path.skip();
+              }
             }
           }
         });

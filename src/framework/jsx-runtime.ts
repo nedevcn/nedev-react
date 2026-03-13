@@ -1,8 +1,34 @@
 import { effect } from 'alien-signals';
+import { currentLifecycles, setCurrentLifecycles } from './hooks';
+import { mountRegistry, cleanupRegistry, startLifecycleObserver } from './lifecycle';
+
+// Start tracking DOM mutations for lifecycles
+startLifecycleObserver();
+
+/**
+ * Safely assign a style object to an element, unwrapping any reactive Proxy values.
+ * Object.assign(el.style, obj) crashes when style values are Proxy objects because
+ * CSSStyleDeclaration setters call .toString() which fails on Proxy (this != String).
+ */
+function applyStyle(el: HTMLElement, styleObj: Record<string, any>) {
+  for (const key in styleObj) {
+    let val = styleObj[key];
+    // Unwrap reactive Proxy values (from useMemo, useState, useContext)
+    // All framework Proxies now expose __g for unwrapping
+    if (val && typeof val === 'object' && '__g' in val) {
+      const getter = val.__g;
+      val = typeof getter === 'function' ? getter() : val;
+    }
+    (el.style as any)[key] = val;
+  }
+}
 
 // Dynamic child insertion helper
 function insertNode(el: HTMLElement | DocumentFragment, child: any, marker: Node | null): Node[] {
   if (child == null || typeof child === 'boolean') return [];
+  if (child && typeof child === 'object' && '__lazy' in child && typeof child.__lazy === 'function') {
+    return insertNode(el, child.__lazy(), marker);
+  }
   if (child instanceof Node) {
     el.insertBefore(child, marker);
     return [child];
@@ -23,6 +49,16 @@ function handleChild(el: HTMLElement | DocumentFragment, child: any) {
   if (child == null || typeof child === 'boolean') {
     return;
   }
+  
+  if (Array.isArray(child)) {
+    child.forEach(c => handleChild(el, c));
+    return;
+  }
+
+  if (child && typeof child === 'object' && '__lazy' in child && typeof child.__lazy === 'function') {
+    handleChild(el, child.__lazy());
+    return;
+  }
 
   // Handle our new `{ __g: () => ... }` reactive getter envelope
   if (child && typeof child === 'object' && '__g' in child && typeof child.__g === 'function') {
@@ -41,8 +77,6 @@ function handleChild(el: HTMLElement | DocumentFragment, child: any) {
     });
   } else if (child instanceof Node) {
     el.appendChild(child);
-  } else if (Array.isArray(child)) {
-    child.forEach(c => handleChild(el, c));
   } else {
     // Static primitive
     el.appendChild(document.createTextNode(String(child)));
@@ -73,7 +107,43 @@ export function jsx(type: any, props: any, key?: any) {
         return val;
       }
     });
-    return Component(reactiveProps);
+
+    const prevLifecycles = currentLifecycles;
+    const hooks: { mounts: (() => void)[], cleanups: (() => void)[] } = { mounts: [], cleanups: [] };
+    setCurrentLifecycles(hooks);
+
+    let res = Component(reactiveProps);
+
+    setCurrentLifecycles(prevLifecycles);
+
+    if (hooks.mounts.length > 0 || hooks.cleanups.length > 0) {
+      let targetNode: Node;
+      if (res instanceof Node && !(res instanceof DocumentFragment)) {
+        targetNode = res;
+      } else {
+        targetNode = document.createComment(`Component`);
+        if (res instanceof DocumentFragment) {
+          res.insertBefore(targetNode, res.firstChild);
+        } else if (Array.isArray(res)) {
+          res.unshift(targetNode);
+        } else {
+          // It's a primitive, wrap in text node
+          const textNode = document.createTextNode(String(res));
+          res = [targetNode, textNode];
+        }
+      }
+
+      if (hooks.mounts.length > 0) {
+        let existing = mountRegistry.get(targetNode) || [];
+        mountRegistry.set(targetNode, [...existing, ...hooks.mounts]);
+      }
+      if (hooks.cleanups.length > 0) {
+        let existing = cleanupRegistry.get(targetNode) || [];
+        cleanupRegistry.set(targetNode, [...existing, ...hooks.cleanups]);
+      }
+    }
+
+    return res;
   }
 
   // Native elements
@@ -111,11 +181,11 @@ export function jsx(type: any, props: any, key?: any) {
           if (typeof styleObj === 'string') {
             el.style.cssText = styleObj;
           } else if (styleObj) {
-            Object.assign(el.style, styleObj);
+            applyStyle(el, styleObj);
           }
         });
       } else {
-        Object.assign(el.style, rawVal);
+        applyStyle(el, rawVal);
       }
     } else {
       // Static or reactive prop

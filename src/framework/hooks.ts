@@ -25,19 +25,27 @@ export function useEffect(fn: () => void | (() => void), deps?: any[]) {
     if (cleanup) cleanup();
     cleanup = fn();
   });
+  
+  // Register component unmount cleanup to also trigger effect cleanup
+  onCleanup(() => {
+    if (cleanup) cleanup();
+  });
 }
 
 export function useMemo<T>(fn: () => T, deps?: any[]): T {
   const comp = computed(fn);
-  return new Proxy({} as any, {
+  return new Proxy({ __isMemoProxy: true } as any, {
     get(_, prop) {
+      if (prop === Symbol.toPrimitive) return () => comp();
+      if (prop === '__isMemoProxy') return true;
+      if (prop === '__g') return comp; // Allow unwrapping via __g pattern
       const val = comp() as any;
       if (val == null) return undefined;
       return val[prop];
     },
-    apply(_, thisArg, args) {
-      const val = comp() as any;
-      if (typeof val === 'function') return val.apply(thisArg, args);
+    has(_, prop) {
+      if (prop === '__isMemoProxy' || prop === '__g') return true;
+      return prop in Object(comp());
     },
     ownKeys() {
       const val = comp() as any;
@@ -54,6 +62,27 @@ export function useRef<T>(initialValue: T | null = null): { current: T | null } 
   return { current: initialValue };
 }
 
+export let currentLifecycles: { mounts: (() => void)[], cleanups: (() => void)[] } | null = null;
+export function setCurrentLifecycles(val: any) {
+  currentLifecycles = val;
+}
+
+export function onMount(fn: () => void) {
+  if (currentLifecycles) {
+    currentLifecycles.mounts.push(fn);
+  } else {
+    // If called outside a component, execute it immediately as it implies it's already mounted or global
+    // But ideally it should warn if strictly wanting component lifecycle
+    fn();
+  }
+}
+
+export function onCleanup(fn: () => void) {
+  if (currentLifecycles) {
+    currentLifecycles.cleanups.push(fn);
+  }
+}
+
 /**
  * 递归计算懒执行的 children
  */
@@ -61,8 +90,8 @@ function evaluateChildren(children: any): any {
   if (Array.isArray(children)) {
     return children.map(evaluateChildren);
   }
-  if (children && typeof children === 'object' && '__g' in children) {
-    return evaluateChildren(children.__g());
+  if (children && typeof children === 'object' && '__lazy' in children && typeof children.__lazy === 'function') {
+    return evaluateChildren(children.__lazy());
   }
   return children;
 }
@@ -91,16 +120,55 @@ export function useContext<T>(context: any): T {
   // Return a proxy that acts as both a getter (for `{ __g: ... }` unpacking in jsx-runtime)
   // and an object proxy (for standard prop destructuring and access)
   const proxy = new Proxy({ __g: thunk } as any, {
-    get(target, prop) {
-      if (prop === '__g') return target.__g;
+    get(_, prop) {
+      if (prop === '__g') return thunk;
       
-      const currentValue = thunk();
-      if (currentValue == null) return undefined;
-      const res = currentValue[prop];
-      if (typeof res === 'function') return res.bind(currentValue);
+      const val = thunk();
+      if (val == null) return undefined;
+      const res = val[prop];
+      if (typeof res === 'function') return res.bind(val);
       return res;
     }
   });
 
   return proxy as T;
+}
+
+export const SuspenseContext = createContext<{
+  register: () => void;
+  resolve: () => void;
+} | null>(null);
+
+export function createResource<T>(fetcher: () => Promise<T>) {
+  // IMPORTANT: Use raw signal() here, NOT useState().
+  // useState returns { get, set } which is NOT array-destructurable.
+  // This is framework-internal code, not user code, so Babel doesn't transform it.
+  const dataSig = signal<T | null>(null);
+  const loadingSig = signal(true);
+  const errorSig = signal<any>(null);
+
+  const suspense = useContext(SuspenseContext);
+
+  if (suspense && (suspense as any).__g() != null) {
+    // Defer registration to avoid synchronous effect recursion during render
+    Promise.resolve().then(() => (suspense as any).register());
+  }
+
+  fetcher()
+    .then(val => {
+      dataSig(val);
+      loadingSig(false);
+      if (suspense && (suspense as any).__g() != null) (suspense as any).resolve();
+    })
+    .catch(err => {
+      errorSig(err);
+      loadingSig(false);
+      if (suspense && (suspense as any).__g() != null) (suspense as any).resolve();
+    });
+
+  return {
+    get data() { return dataSig(); },
+    get loading() { return loadingSig(); },
+    get error() { return errorSig(); }
+  };
 }
