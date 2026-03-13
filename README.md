@@ -71,5 +71,32 @@ export function Counter() {
 
 *Note: The `Counter` function runs only once. Only the specific `{count}` text node and the conditional `<div>` elements are re-evaluated and swapped by the framework's internal effects.*
 
+## 🗺️ Next Version Development Plan (V2 Roadmap)
+
+While V1 successfully proves the concept of a zero-VDOM, React-compatible framework, there are several crucial features needed for production readiness:
+
+### 1. High-Performance List Rendering (`<For>` or Smart `map`)
+Currently, using `array.map()` inside JSX will re-render the entire list fragment if the array signal changes. 
+- **Goal:** Implement a keyed list rendering mechanism (similar to Solid's `<For each={items}>`) that can surgically add/remove/move DOM nodes based on array mutations without recreating unchanged elements.
+- **Approach:** We may need to introduce a specific API for lists, or use Babel to compile `data.map` into an optimized array-diffing engine.
+
+### 2. Component Props Reactivity & `memo`
+In a Run-Once component model, passing dynamic signals as props down to child components requires careful handling.
+- **Goal:** Ensure destructured props remain reactive.
+- **Approach:** The Babel plugin needs to intelligently wrap prop accesses or transform destructured props into getters so child components can react to parent state changes automatically.
+
+### 3. Context API (`createContext` & `useContext`)
+For global state management and theme passing without prop-drilling.
+- **Goal:** Implement a VDOM-less dependency injection system.
+- **Approach:** Since we don't have a virtual tree, we might leverage the DOM hierarchy itself (e.g., using a custom `Map` attached to parent DOM nodes) to resolve context values for descendants.
+
+### 4. Refs (`useRef` & `ref={...}`)
+- **Goal:** Allow direct, synchronous access to created DOM elements.
+- **Approach:** Add support for the `ref` prop in `jsx-runtime` to pass the instantiated `HTMLElement` directly back to the `useRef` object.
+
+### 5. Server-Side Rendering (SSR) Support
+- **Goal:** Allow the framework to render to HTML strings on the server.
+- **Approach:** Create an alternative `jsx-runtime` for Node environments that buffers strings instead of creating `document` nodes.
+
 ## 📄 License
 MIT

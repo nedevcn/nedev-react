@@ -45,3 +45,62 @@ export function useMemo<T>(fn: () => T, deps?: any[]): T {
     }
   });
 }
+
+/**
+ * useRef 返回一个存放可变值的对象，通常用于获取真实的 DOM 引用。
+ * 修改它的 .current 属性不会触发组件的重新渲染或依赖收集。
+ */
+export function useRef<T>(initialValue: T | null = null): { current: T | null } {
+  return { current: initialValue };
+}
+
+/**
+ * 递归计算懒执行的 children
+ */
+function evaluateChildren(children: any): any {
+  if (Array.isArray(children)) {
+    return children.map(evaluateChildren);
+  }
+  if (children && typeof children === 'object' && '__g' in children) {
+    return evaluateChildren(children.__g());
+  }
+  return children;
+}
+
+export function createContext<T>(defaultValue: T) {
+  const id = Symbol();
+  let stack: Array<() => T> = [() => defaultValue];
+
+  return {
+    id,
+    Provider: function(props: any) {
+      stack.push(() => props.value);
+      const res = evaluateChildren(props.children);
+      stack.pop();
+      return res;
+    },
+    _stack: stack
+  };
+}
+
+export function useContext<T>(context: any): T {
+  const stack = context._stack;
+  // Capture current thunk in closure (representing the closest provider at execution time)
+  const thunk = stack[stack.length - 1];
+
+  // Return a proxy that acts as both a getter (for `{ __g: ... }` unpacking in jsx-runtime)
+  // and an object proxy (for standard prop destructuring and access)
+  const proxy = new Proxy({ __g: thunk } as any, {
+    get(target, prop) {
+      if (prop === '__g') return target.__g;
+      
+      const currentValue = thunk();
+      if (currentValue == null) return undefined;
+      const res = currentValue[prop];
+      if (typeof res === 'function') return res.bind(currentValue);
+      return res;
+    }
+  });
+
+  return proxy as T;
+}

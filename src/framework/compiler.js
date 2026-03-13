@@ -74,9 +74,12 @@ export default function solidReactCompiler() {
             const { node, parent } = jsxPath;
             if (t.isJSXEmptyExpression(node.expression)) return;
             
-            // Prevent infinite loop: if already an arrow function without params, assume it was us
-            // Note: Users might write () => count themselves, we don't double wrap.
-            if (t.isArrowFunctionExpression(node.expression) && node.expression.params.length === 0) {
+            // Prevent infinite loop & double wrapping: if the expression is already a function, do NOT wrap it.
+            // This allows event handlers, render props (children={(item) => ReactNode}), etc.
+            if (
+              t.isArrowFunctionExpression(node.expression) || 
+              t.isFunctionExpression(node.expression)
+            ) {
               return;
             }
 
@@ -86,16 +89,44 @@ export default function solidReactCompiler() {
                 return;
               }
               const newContainer = t.jsxExpressionContainer(
-                t.arrowFunctionExpression([], node.expression)
+                t.objectExpression([
+                  t.objectProperty(
+                    t.identifier('__g'),
+                    t.arrowFunctionExpression([], node.expression)
+                  )
+                ])
               );
               jsxPath.replaceWith(newContainer);
               jsxPath.skip(); // <--- Prevent re-traversing the replaced node
             } else if (t.isJSXElement(parent) || t.isJSXFragment(parent)) {
               const newContainer = t.jsxExpressionContainer(
-                t.arrowFunctionExpression([], node.expression)
+                t.objectExpression([
+                  t.objectProperty(
+                    t.identifier('__g'),
+                    t.arrowFunctionExpression([], node.expression)
+                  )
+                ])
               );
               jsxPath.replaceWith(newContainer);
               jsxPath.skip(); // <--- Prevent re-traversing
+            }
+          },
+
+          // Transform JSX elements that are direct children of another element/fragment into lazy getters
+          JSXElement(path) {
+            const parent = path.parent;
+            // Only transform if it's a child of another JSX element or fragment
+            if (t.isJSXElement(parent) || t.isJSXFragment(parent)) {
+              const newContainer = t.jsxExpressionContainer(
+                t.objectExpression([
+                  t.objectProperty(
+                    t.identifier('__g'),
+                    t.arrowFunctionExpression([], path.node)
+                  )
+                ])
+              );
+              path.replaceWith(newContainer);
+              path.skip(); // Prevent infinite wrapping
             }
           }
         });

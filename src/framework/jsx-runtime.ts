@@ -24,14 +24,14 @@ function handleChild(el: HTMLElement | DocumentFragment, child: any) {
     return;
   }
 
-  if (typeof child === 'function') {
-    // It's a reactive getter created by our Babel plugin!
+  // Handle our new `{ __g: () => ... }` reactive getter envelope
+  if (child && typeof child === 'object' && '__g' in child && typeof child.__g === 'function') {
     const marker = document.createTextNode('');
     el.appendChild(marker);
     let currentNodes: Node[] = [];
     
     effect(() => {
-      const val = child();
+      const val = child.__g();
       // Remove old nodes
       currentNodes.forEach(n => {
         if (n.parentNode) n.parentNode.removeChild(n);
@@ -62,9 +62,18 @@ export function jsx(type: any, props: any, key?: any) {
   // Component support
   if (typeof type === 'function') {
     const Component = type;
-    // Note: in our zero VDOM model, components run EXACTLY ONCE.
-    // So we just call them directly. Proved react compatible.
-    return Component(props);
+    // Provide a Proxy over props so that `{ __g: fn }` is transparently unwrapped
+    // This gives child components reactive access to props passed from the parent!
+    const reactiveProps = new Proxy(props || {}, {
+      get(target, propKey) {
+        const val = target[propKey];
+        if (val && typeof val === 'object' && '__g' in val && typeof val.__g === 'function') {
+          return val.__g();
+        }
+        return val;
+      }
+    });
+    return Component(reactiveProps);
   }
 
   // Native elements
@@ -73,24 +82,32 @@ export function jsx(type: any, props: any, key?: any) {
   for (const name in props) {
     if (name === 'children') continue;
 
-    const val = props[name];
+    const rawVal = props[name];
+    const isReactive = rawVal && typeof rawVal === 'object' && '__g' in rawVal;
+    const getter = isReactive ? rawVal.__g : (typeof rawVal === 'function' ? rawVal : () => rawVal);
 
-    if (name.startsWith('on') && name.length > 2) {
+    if (name === 'ref') {
+      const refVal = isReactive ? rawVal.__g() : rawVal;
+      if (typeof refVal === 'function') {
+        refVal(el);
+      } else if (refVal && 'current' in refVal) {
+        refVal.current = el;
+      }
+    } else if (name.startsWith('on') && name.length > 2) {
       // Event listener: onClick -> click
       const eventName = name.slice(2).toLowerCase();
-      // Notice we use the latest function, actually since component runs
-      // once, the function reference doesn't change, no need to delegate.
-      el.addEventListener(eventName, val);
+      // Babel explicitly skips `on*` attributes, so rawVal is the actual function
+      el.addEventListener(eventName, rawVal);
     } else if (name === 'className') {
-      if (typeof val === 'function') {
-        effect(() => el.className = val() || '');
+      if (isReactive || typeof rawVal === 'function') {
+        effect(() => el.className = getter() || '');
       } else {
-        el.className = val || '';
+        el.className = rawVal || '';
       }
     } else if (name === 'style') {
-       if (typeof val === 'function') {
+       if (isReactive || typeof rawVal === 'function') {
         effect(() => {
-          const styleObj = val();
+          const styleObj = getter();
           if (typeof styleObj === 'string') {
             el.style.cssText = styleObj;
           } else if (styleObj) {
@@ -98,13 +115,13 @@ export function jsx(type: any, props: any, key?: any) {
           }
         });
       } else {
-        Object.assign(el.style, val);
+        Object.assign(el.style, rawVal);
       }
     } else {
       // Static or reactive prop
-      if (typeof val === 'function') {
+      if (isReactive || typeof rawVal === 'function') {
          effect(() => {
-           const evaluated = val();
+           const evaluated = getter();
            if (evaluated == null || evaluated === false) {
              el.removeAttribute(name);
            } else {
@@ -112,10 +129,10 @@ export function jsx(type: any, props: any, key?: any) {
            }
          });
       } else {
-         if (val == null || val === false) {
+         if (rawVal == null || rawVal === false) {
              el.removeAttribute(name);
          } else {
-             el.setAttribute(name, val === true ? '' : val);
+             el.setAttribute(name, rawVal === true ? '' : rawVal);
          }
       }
     }
